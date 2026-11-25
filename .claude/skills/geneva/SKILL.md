@@ -434,6 +434,12 @@ MCP (`core/mcp/tools/geneva.py`):
   тегом; целостность — по `SHA256SUMS` самого релиза
   (`_verify_downloaded_file`), манифестный sha256 применяется только когда
   приехал ровно пин;
+- выбор версии в UI: `GET /api/geneva/releases` (тот же `list_releases`,
+  кэш 5 минут) + `POST /api/geneva/install` с `{tag, transport}` — тот же
+  InstallExtras-селектор, что у usque/awg (`web/js/pages/geneva.js`).
+  Явный тег валидируется `^[A-Za-z0-9._-]{1,64}$` и ослабляет sha256
+  ровно как `allow_unpinned` (доверие `SHA256SUMS` релиза, при их
+  отсутствии — громкий warning); пин вниз/откат ставится той же кнопкой;
 - `pinned_tag` v2.0.2 (из `GENEVA_VERSION`) — «проверенный пол»: под эту
   версию в `sha256_map` лежат хэши всех пяти linux-архитектур (aarch64,
   armv7, mips, mipsel, x86_64), сверенные с `SHA256SUMS` релиза и

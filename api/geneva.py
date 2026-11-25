@@ -6,6 +6,9 @@ API движка geneva_c и выбора движка обхода.
   GET  /api/geneva/status         — всё для страницы одним ответом:
                                      бинарник, движок, подбор
   POST /api/geneva/install        — поставить geneva из релиза avatarDD/geneva_c
+                                     {tag, transport}; пустой tag — последний
+  GET  /api/geneva/releases       — релизы апстрима для выбора версии
+                                     (?transport=&force=1)
   GET  /api/geneva/config         — настройки движка
   PUT  /api/geneva/config         — обновить настройки
   POST /api/geneva/start | stop | restart
@@ -37,7 +40,7 @@ API движка geneva_c и выбора движка обхода.
   POST /api/geneva/auto/reset     — забыть сервис {key}
   POST /api/geneva/auto/settings  — {workers 1–64, max_groups 1–8,
                                      split_workers, by_name, final_check}
-  GET  /api/geneva/auto/workers-suggest — сколько «труб» советует
+  GET  /api/geneva/auto/workers-suggest — сколько «потоков» советует
                                      этому роутеру железо {workers,
                                      cpu, mem_available_mb}
   POST /api/geneva/auto/check-now — проверить сервис вне очереди {key}
@@ -60,6 +63,12 @@ API движка geneva_c и выбора движка обхода.
 """
 
 from bottle import request, response
+
+import re
+
+# Тег релиза из запроса: те же границы, что у usque/mihomo — без
+# управляющих символов и «/», иначе тег уходил бы в URL GitHub как есть.
+_RE_TAG = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def _body() -> dict:
@@ -95,6 +104,11 @@ def register(app):
         det = mgr.detect()
         # Что поставит «Установить/Обновить»: закреплённый релиз.
         det["release"] = geneva_release_info(det.get("version", ""))
+        # Тег последней установки (POST /install его запоминает; как у
+        # usque): бинарник могли заменить и вручную — сверьте с version.
+        from core.config_manager import get_config_manager
+        det["installed_tag"] = get_config_manager().get(
+            "geneva", "installed_tag", default="") or ""
         return {"ok": True, "active_engine": get_active(),
                 "detect": det, "engine": mgr.status(),
                 "search": mgr.search_status()}
@@ -102,7 +116,21 @@ def register(app):
     @app.route("/api/geneva/install", method="POST")
     def geneva_install():
         from core.ext_binary_installer import install_binary_by_name
-        res = install_binary_by_name("geneva")
+        # Явно выбранный тег имеет приоритет над «последним релизом» —
+        # тот же контракт, что у usque/awg: селектор версий в UI шлёт
+        # {tag, transport}. Целостность чужого тега — по контрольным
+        # суммам самого релиза (SHA256SUMS), см. install_binary_by_name.
+        body = _body()
+        tag = str(body.get("tag") or "").strip()
+        transport = str(body.get("transport") or "").strip()
+        if tag and not _RE_TAG.match(tag):
+            return {"ok": False, "error": "Недопустимый тег релиза"}
+        if transport:
+            from core.download_transport import is_valid_spec
+            if not is_valid_spec(transport):
+                return {"ok": False,
+                        "error": "Неизвестный транспорт: %s" % transport}
+        res = install_binary_by_name("geneva", tag=tag, transport=transport)
         if res.get("ok"):
             from core.config_manager import get_config_manager
             cfg = get_config_manager()
@@ -114,6 +142,22 @@ def register(app):
             # через rename): новая версия заработает после перезапуска.
             res["restart_needed"] = mgr.is_running()
         return _reply(res, 502)
+
+    @app.route("/api/geneva/releases", method="GET")
+    def geneva_releases():
+        """Релизы avatarDD/geneva_c — для выбора версии в InstallExtras.
+
+        Тот же контракт, что у usque/mihomo: {"ok", "releases":
+        [{tag, published_at, prerelease}], "pinned"}. Кэш 5 минут —
+        перерисовка страницы не бьёт по rate-limit GitHub API.
+        """
+        from core.ext_binary_installer import list_releases
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force") in ("1", "true", "True")
+        try:
+            return list_releases("geneva", transport=transport, force=force)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/geneva/config", method="GET")
     def geneva_config_get():
@@ -296,7 +340,7 @@ def register(app):
 
     @app.route("/api/geneva/auto/workers-suggest", method="GET")
     def geneva_auto_workers_suggest():
-        # Совет по железу: сколько «труб» держать. Применяет кнопка
+        # Совет по железу: сколько «потоков» держать. Применяет кнопка
         # настроек, здесь только считаем.
         from core.geneva_auto_manager import get_geneva_auto_manager
         return get_geneva_auto_manager().workers_suggest()

@@ -27,6 +27,17 @@ const GenevaPage = (() => {
     let _settingsFilled = false;
     let _library = [];
     let _last = null;
+    let _detectMode = '';    // 'absent' | 'broken' | 'ok' — для перерисовки блока версии
+
+    // Выбор версии релиза и транспорт скачивания — общий под-компонент
+    // (см. components/setup_ui.js), тот же, что у установки
+    // sing-box/mihomo/awg. apiBase '/api/geneva' ждёт GET /releases и
+    // POST /install с {tag, transport} (пустой tag — последний релиз).
+    const extras = InstallExtras.create({
+        globalPath: 'GenevaPage.extras',
+        apiBase: '/api/geneva',
+        onChange: () => _renderInstallExtras(),
+    });
 
     const VERDICT = {
         working:    ['status-ok', 'Стратегия срабатывает на трафике'],
@@ -106,6 +117,12 @@ const GenevaPage = (() => {
         }
         _formFilled = false;
         _settingsFilled = false;
+        // Поля «Авто» пересоздаются шаблоном со значениями по умолчанию —
+        // отметки «уже заполнено» тоже сбрасываем: после возврата на
+        // страницу опрос заново заполняет поля и галочки, иначе
+        // «Сохранить» молча понижает настроенное.
+        _autoSettingsShown = false;
+        _listsShown = false;
         _sections = new Set(opts.sections || ALL_SECTIONS);
         const S = id => _sections.has(id);
         const header = opts.header === false ? '' : `
@@ -457,7 +474,8 @@ const GenevaPage = (() => {
         await Promise.all([_refresh(), _loadConfig(),
                            S('auto') ? _loadNat() : null,
                            S('library') ? loadLib() : null,
-                           S('found') ? _loadFound() : null]);
+                           S('found') ? _loadFound() : null,
+                           extras.loadTransports()]);
         // Пока ждали ответы, со страницы ушли (destroy) или её
         // перерисовали: опрос от старого рендера тёк бы вечно.
         if (token !== _renderToken) return;
@@ -924,10 +942,14 @@ const GenevaPage = (() => {
     let _autoSettingsShown = false;
 
     function _renderAutoSettings(a) {
-        // поля заполняются с сервера один раз: опрос не должен затирать
-        // то, что пользователь сейчас вводит
+        // поля заполняются с сервера один раз за перерисовку: опрос не
+        // должен затирать то, что пользователь сейчас вводит. Во
+        // вкладке «Скан стратегий» (sections:['search']) карточки нет —
+        // выходим, не тратя однократность: иначе после хаба основная
+        // страница останется со значениями шаблона.
         if (_autoSettingsShown || !a) return;
         const w = document.getElementById('gv-auto-workers');
+        if (!w) return;
         const g = document.getElementById('gv-auto-groups');
         if (w && a.workers) w.value = a.workers;
         if (g && a.max_groups) g.value = a.max_groups;
@@ -940,10 +962,24 @@ const GenevaPage = (() => {
     // quiet — без тоста «Сохранено»: кнопка «Авто» экономит его для
     // своего итогового сообщения. Возврат — сохранилось ли.
     async function _saveAutoSettings(quiet) {
-        const w = parseInt((document.getElementById('gv-auto-workers') || {}).value, 10);
-        const g = parseInt((document.getElementById('gv-auto-groups') || {}).value, 10);
+        // Пустое или нечисловое поле не отправляем вовсе: сервер не
+        // меняет пропущенную настройку. Иначе «Сохранить» после
+        // перерисовки страницы или с полем, которое браузер не признал
+        // числом (type="number" отдаёт пустую строку), отдаёт
+        // «max_groups: целое от 1 до 8» и не сохраняет ничего.
+        const num = id => {
+            const el = document.getElementById(id);
+            const raw = el ? String(el.value || '').trim() : '';
+            if (!raw) return null;
+            const n = Number(raw);
+            return Number.isFinite(n) ? n : null;
+        };
+        const body = {};
+        const w = num('gv-auto-workers');
+        const g = num('gv-auto-groups');
+        if (w !== null) body.workers = w;
+        if (g !== null) body.max_groups = g;
         const t = document.getElementById('gv-auto-tunnels');
-        const body = { workers: w, max_groups: g };
         if (t) body.help_tunnels = !!t.checked;
         // Галочки режима вынесены из блока списков в карточку — карточная
         // кнопка сохраняет всё, что видно на экране.
@@ -963,7 +999,7 @@ const GenevaPage = (() => {
         }
     }
 
-    // Кнопка «Авто» у числа «труб»: сервер советует по железу роутера
+    // Кнопка «Авто» у числа «потоков»: сервер советует по железу роутера
     // (ядра и память), совет сразу применяется и сохраняется. Один
     // итоговый тост, а не «Сохранено» + «Подобрано» друг за другом.
     async function _tuneAutoWorkers() {
@@ -971,7 +1007,7 @@ const GenevaPage = (() => {
             const res = await API.get('/api/geneva/auto/workers-suggest');
             if (!res || !res.ok) throw new Error(errText(res));
             const w = document.getElementById('gv-auto-workers');
-            if (w) w.value = res.workers;
+            if (w && Number.isFinite(res.workers)) w.value = res.workers;
             const saved = await _saveAutoSettings(true);
             if (!saved) return;
             Toast.info(res.mem_available_mb > 0
@@ -1192,15 +1228,35 @@ const GenevaPage = (() => {
 
     /* ───────── движок geneva ───────── */
 
+    // Блок «версия + транспорт» под кнопкой установки. В состояниях
+    // «не установлен»/«сломан» кнопка уже есть рядом — дополнительная
+    // не нужна; в нормальном состоянии кнопка появляется только когда
+    // выбран конкретный тег (без выбора ставить поверх той же версии
+    // нечего).
+    function _installExtrasHtml() {
+        const btn = _detectMode === 'ok' && extras.selectedTag()
+            ? '<button class="btn btn-primary btn-sm" data-action="install"'
+              + ' style="margin-top:6px;">Установить выбранную</button>'
+            : '';
+        return extras.optionsHtml() + btn;
+    }
+
+    function _renderInstallExtras() {
+        const el = document.getElementById('gv-install-extras');
+        if (el) el.innerHTML = _installExtrasHtml();
+    }
+
     function _renderDetect(d) {
         const el = document.getElementById('gv-detect');
         if (!el) return;
         if (!d.installed) {
+            _detectMode = 'absent';
             el.innerHTML = `
                 <div class="gv-note">
                     geneva_c не установлен. Сборка ставится из официального релиза
                     <a href="https://github.com/avatarDD/geneva_c/releases" target="_blank" rel="noopener">avatarDD/geneva_c</a>
                     с проверкой sha256.
+                    <div id="gv-install-extras" style="margin:8px 0;">${_installExtrasHtml()}</div>
                     <button class="btn btn-primary btn-sm" data-action="install">Установить</button>
                 </div>`;
             return;
@@ -1211,21 +1267,27 @@ const GenevaPage = (() => {
         // нужно ставить заново. Без этой кнопки выхода из состояния не
         // было: «Обновить» появлялась только при известной версии.
         if (!d.version) {
+            _detectMode = 'broken';
             const why = d.hint || 'версию узнать не удалось — бинарник не отвечает на «geneva version --json»';
             el.innerHTML = `<div class="gv-note">
                 <div class="text-error" style="margin-bottom:6px;">${esc(why)}</div>
                 <div class="text-muted" style="font-size:12px;margin-bottom:6px;">
                     <span class="gv-mono">${esc(d.binary)}</span></div>
+                <div id="gv-install-extras" style="margin:8px 0;">${_installExtrasHtml()}</div>
                 <button class="btn btn-primary btn-sm" data-action="install">Переустановить</button>
             </div>`;
             return;
         }
+        _detectMode = 'ok';
+        // «Обновить до X» всегда ставит X (последний релиз), даже если в
+        // селекторе ниже выбран тег — иначе подпись кнопки врала бы.
         const update = rel.has_update
-            ? `<button class="btn btn-primary btn-sm" data-action="install">Обновить до ${esc(rel.latest)}</button>`
+            ? `<button class="btn btn-primary btn-sm" data-action="install-latest">Обновить до ${esc(rel.latest)}</button>`
             : '';
         el.innerHTML = `<div class="text-muted gv-row" style="font-size:12px;margin-bottom:6px;">
             <span>geneva ${esc(d.version)} · ${esc(d.arch)} · ${esc(d.binary)}</span>
             ${update}</div>
+            <div id="gv-install-extras" style="margin:8px 0;">${_installExtrasHtml()}</div>
             ${d.hint ? `<div class="text-error" style="font-size:12px;">${esc(d.hint)}</div>` : ''}`;
     }
 
@@ -1346,10 +1408,14 @@ const GenevaPage = (() => {
         }
     }
 
-    async function _install() {
+    async function _install(latest) {
+        // Тело собирает InstallExtras: выбранный тег (пусто — последний
+        // релиз) и транспорт скачивания, если он не «напрямую».
+        // «Обновить до X» сбрасывает выбор тега: кнопка обещает X.
+        if (latest) extras.onTagChange('');
         Toast.success('Скачиваю geneva из релиза…');
         try {
-            const res = await API.post('/api/geneva/install', {}, { timeout: 180000 });
+            const res = await API.post('/api/geneva/install', extras.installBody(), { timeout: 180000 });
             Toast.success('geneva установлен: ' + (res.version || res.tag || ''));
             if (res.restart_needed) {
                 const ok = await Confirm.show('Перезапустить geneva?',
@@ -1698,9 +1764,10 @@ const GenevaPage = (() => {
             return;
         }
         if (t.dataset.action === 'install') return _install();
+        if (t.dataset.action === 'install-latest') return _install(true);
         if (t.dataset.use) return _setStrategy(t.dataset.use, 'search');
         if (t.dataset.useLib) return _setStrategy(t.dataset.useLib, 'library');
     }
 
-    return { render, destroy };
+    return { render, destroy, extras };
 })();

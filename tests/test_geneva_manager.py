@@ -1108,6 +1108,50 @@ class TestAutoEngineProfiles(unittest.TestCase):
         with open(self.ep["profiles"]) as f:
             self.assertIn("[profile p1]", f.read())
 
+    def test_apply_x_strategy_passes_blob_pairs_not_names(self):
+        """Регрессия 0.26.06: с geneva_c 2.0.2 (ext_xgen) поиск находит
+        x-стратегии, и argv() дорос до блобов — ему нужны ПАРЫ
+        (имя, путь), а ему передавали имена. Тик «Авто» и пробы в поиске
+        падали «too many values to unpack (expected 2)»."""
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        proc = mock.Mock()
+        proc.pid = 7001
+        proc.poll.return_value = None
+        calls = []
+
+        def spawn(args, log_path):
+            calls.append(args)
+            return proc
+
+        xstrat = "[TCP:flags:PA]-xfake{blob=z2_fake_default_tls}-| \\/"
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                              return_value={"ext_xact", "ext_profile"}), \
+             mock.patch.object(gm.geneva_ext, "blob_files",
+                               return_value=[("z2_fake_default_tls",
+                                              "/tmp/fake.bin")]), \
+             mock.patch.object(m, "auto_engine_pid", return_value=None), \
+             mock.patch.object(m, "auto_engine_stop"), \
+             mock.patch.object(gm, "auto_engine_paths",
+                               return_value=self.ep), \
+             mock.patch.object(gm, "_spawn", side_effect=spawn), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events",
+                               return_value=True), \
+             mock.patch.object(gm, "trim_file"):
+            r = m.auto_engine_apply(
+                [self._profile("p1", xstrat, ["1.1.1.1"])], 3)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--ext", calls[0])
+        self.assertIn("--ext-blob", calls[0])
+        self.assertEqual(
+            calls[0][calls[0].index("--ext-blob") + 1],
+            "z2_fake_default_tls:@/tmp/fake.bin")
+
     def _live(self, feats=("ext", "ext_profile"), strategies=None):
         """Менеджер с живым процессом профилей под ``p1`` стратегии S1."""
         os.makedirs(self.ep["dir"], exist_ok=True)

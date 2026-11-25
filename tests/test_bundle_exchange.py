@@ -191,10 +191,34 @@ class TestApi(unittest.TestCase):
             {"id": "p1", "args": "--blob=b:+%d@bin/big.bin "
                                  "--lua-desync=fake:blob=b"
                                  % (bi.MAX_BLOB + 100)}]}
-        with mock.patch.object(br, "_blob_file_path", lambda v: f.name):
+        with mock.patch.object(br, "_blob_file_path", lambda v: f.name), \
+                mock.patch.object(be, "_export_roots",
+                                  lambda: [os.path.dirname(f.name)]):
             out, _ = be.export_strategy(st)
         self.assertIn("--blob=b:0x" + "07" * 10,
                       out["strategy"]["profiles"][0]["args"])
+
+    def test_declaration_outside_managed_roots_keeps_path_not_bytes(self):
+        """Абсолютный ``@путь`` — например, оставшийся от импортированного
+        чужого бандла — экспорт не вычитывает: декларация остаётся с
+        путём, а байты файла в бандл не попадают."""
+        import tempfile
+        payload = b"\x16\x03\x01topsecret"
+        with tempfile.TemporaryDirectory() as d:
+            secret = os.path.join(d, "secret.bin")
+            with open(secret, "wb") as f:
+                f.write(payload)
+            st = {"id": "x", "name": "x", "profiles": [
+                {"id": "p1", "args": "--blob=leak:@%s "
+                                     "--lua-desync=fake:blob=leak" % secret}]}
+            out, warnings = be.export_strategy(st)
+        args = out["strategy"]["profiles"][0]["args"]
+        self.assertIn("--blob=leak:@", args)
+        self.assertNotIn("0x" + payload.hex(), args)
+        self.assertNotIn(base64.b64encode(payload).decode(),
+                         json.dumps(out))
+        self.assertTrue(any("вне управляемых" in w for w in warnings),
+                        warnings)
 
     def test_init_vars_pattern_without_file_and_empty_name(self):
         st = {"id": "x", "name": "", "profiles": [
