@@ -385,22 +385,24 @@ test('вкладка «Стратегии»: пусто', async () => {
     await env.page.render(c, { sections: ['found'] });
     assert.match(env.elements.get('gv-found').innerHTML, /Рабочих стратегий пока нет/);
 });
-test('кнопка «Авто» у числа потоков: подобрала и сохранила', async () => {
+test('кнопка «Авто» у числа потоков: советует, но не сохраняет', async () => {
     const env = makeSandbox({
         auto: AUTO_ON,
         suggest: { ok: true, workers: 6, cpu: 2, mem_available_mb: 180 },
     });
     const root = await renderAuto(env);
+    const before = env.calls.post.length;
     const btn = { dataset: { action: 'auto-workers-tune' } };
     await root.handlers.click[0]({ target: { closest: () => btn } });
     for (let i = 0; i < 5; i++) await tick();
     assert.ok(env.calls.get.includes('/api/geneva/auto/workers-suggest'),
               JSON.stringify(env.calls.get));
+    // поле заполнено советом…
     assert.strictEqual(+env.elements.get('gv-auto-workers').value, 6);
-    const post = env.calls.post.find(p => p[0] === '/api/geneva/auto/settings');
-    assert.ok(post, JSON.stringify(env.calls.post));
-    const body = JSON.parse(JSON.stringify(post[1]));
-    assert.strictEqual(body.workers, 6);
+    // …но тихого сохранения нет: решение остаётся за «Сохранить»
+    assert.strictEqual(env.calls.post.length, before,
+        'авто-подбор не должен сам писать настройки, ' +
+        JSON.stringify(env.calls.post));
 });
 
 test('галочки режима переехали в карточку из свёрнутых списков', async () => {
@@ -463,8 +465,9 @@ test('профили geneva 2.0: в карточке имя профиля, а �
 });
 
 test('«Сохранить» с пустыми полями не отправляет числа', async () => {
-    // Регрессия: пустое поле уходило как null, сервер отвечал
-    // «max_groups: целое от 1 до 8» и не сохранял ничего.
+    // Регрессия: пустое поле уходило как null, сервер тогда отвечал
+    // «max_groups: целое от 1 до 8» (предел давно уже 64) и не
+    // сохранял ничего.
     const env = makeSandbox({ auto: AUTO_ON });
     const root = await renderAuto(env);
     const btn = { dataset: { action: 'auto-settings' } };
@@ -478,10 +481,15 @@ test('«Сохранить» с пустыми полями не отправл�
 
 test('«Авто» с пустым полем групп сохраняет только потоки', async () => {
     // Сценарий из баг-репорта: «Авто» подобрал потоки, поле групп
-    // пустое — сохранить должно потоки, не ругаясь на группы.
+    // пустое — «Сохранить» должно сохранить потоки, не ругаясь на
+    // группы (пустое поле не отправляется вовсе).
     const env = makeSandbox({ auto: AUTO_ON });
     const root = await renderAuto(env);
-    const btn = { dataset: { action: 'auto-workers-tune' } };
+    const tune = { dataset: { action: 'auto-workers-tune' } };
+    await root.handlers.click[0]({ target: { closest: () => tune } });
+    for (let i = 0; i < 5; i++) await tick();
+    assert.strictEqual(+env.elements.get('gv-auto-workers').value, 4);
+    const btn = { dataset: { action: 'auto-settings' } };
     await root.handlers.click[0]({ target: { closest: () => btn } });
     const posts = env.calls.post.filter(p => p[0] === '/api/geneva/auto/settings');
     assert.strictEqual(posts.length, 1);

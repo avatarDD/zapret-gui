@@ -655,8 +655,15 @@ class TestEnable(_Base):
         self.assertEqual(m.search().workers, 6)
         self.assertEqual(m.applier().max_groups, 2)
         self.assertEqual(m.status()["workers"], 6)
+        # «Стратегий одновременно»: прежний потолок 8 не давал сохранить
+        # 16 («max_groups: целое от 1 до 8»). Граница теперь — очередь-
+        # пространство движка (340..403), поэтому 16 валидно, а выше
+        # ENGINE_QUEUES_MAX — нет.
+        self.assertTrue(m.update_settings({"max_groups": 16})["ok"])
+        self.assertEqual(m.applier().max_groups, 16)
         for bad in ({"workers": 0}, {"workers": ga.ENGINE_WORKERS_MAX + 1},
-                    {"max_groups": "3"}, {"workers": True}):
+                    {"max_groups": "3"}, {"workers": True},
+                    {"max_groups": ga.MAX_GROUPS_LIMIT + 1}):
             self.assertFalse(m.update_settings(bad)["ok"], bad)
         self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
         # потолок — предел самого geneva_c (--ext-workers 1–64), не наш
@@ -690,8 +697,9 @@ class TestEnable(_Base):
         self.cfg.set("geneva", "auto", {"max_groups": 99, "workers": 0,
                                         "exclude": "x"})
         st = am.auto_settings(self.cfg)
+        # кламп max_groups — в очередь-пространство движка (340..403)
         self.assertEqual((st["max_groups"], st["workers"], st["exclude"]),
-                         (8, 1, []))
+                         (64, 1, []))
 
 
 class TestEngineIntegration(_StubCase):

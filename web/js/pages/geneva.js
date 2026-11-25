@@ -150,7 +150,7 @@ const GenevaPage = (() => {
                             <input id="gv-auto-workers" type="number" min="1" max="64" class="form-control" value="4" title="${esc(_tr('geneva.auto.workers_hint'))}">
                             <button class="btn btn-ghost btn-sm" data-action="auto-workers-tune" title="${esc(_tr('geneva.auto.workers_tune_hint'))}">${esc(_tr('geneva.auto.workers_tune'))}</button>
                             <label class="form-label" for="gv-auto-groups">${esc(_tr('geneva.auto.max_groups'))}</label>
-                            <input id="gv-auto-groups" type="number" min="1" max="8" class="form-control" value="4">
+                            <input id="gv-auto-groups" type="number" min="1" max="64" class="form-control" value="4">
                             <label class="gv-check gv-auto-wide">
                                 <input type="checkbox" id="gv-auto-tunnels" checked>
                                 <span>${esc(_tr('geneva.auto.help_tunnels'))}</span>
@@ -959,14 +959,13 @@ const GenevaPage = (() => {
         _loadAutoLists();
     }
 
-    // quiet — без тоста «Сохранено»: кнопка «Авто» экономит его для
-    // своего итогового сообщения. Возврат — сохранилось ли.
-    async function _saveAutoSettings(quiet) {
+    // Возврат — сохранилось ли.
+    async function _saveAutoSettings() {
         // Пустое или нечисловое поле не отправляем вовсе: сервер не
         // меняет пропущенную настройку. Иначе «Сохранить» после
         // перерисовки страницы или с полем, которое браузер не признал
         // числом (type="number" отдаёт пустую строку), отдаёт
-        // «max_groups: целое от 1 до 8» и не сохраняет ничего.
+        // «max_groups: целое от 1 до 64» и не сохраняет ничего.
         const num = id => {
             const el = document.getElementById(id);
             const raw = el ? String(el.value || '').trim() : '';
@@ -991,7 +990,7 @@ const GenevaPage = (() => {
         }
         try {
             const res = await API.post('/api/geneva/auto/settings', body);
-            if (!quiet) Toast.success(_tr('geneva.auto.settings_saved', { workers: res.workers, groups: res.max_groups }));
+            Toast.success(_tr('geneva.auto.settings_saved', { workers: res.workers, groups: res.max_groups }));
             return true;
         } catch (e) {
             Toast.error(errText(e));
@@ -1000,21 +999,19 @@ const GenevaPage = (() => {
     }
 
     // Кнопка «Авто» у числа «потоков»: сервер советует по железу роутера
-    // (ядра и память), совет сразу применяется и сохраняется. Один
-    // итоговый тост, а не «Сохранено» + «Подобрано» друг за другом.
+    // (ядра и память). Только заполняет поле — осознанно выставленное
+    // число не затираем, итог решает кнопка «Сохранить».
     async function _tuneAutoWorkers() {
         try {
             const res = await API.get('/api/geneva/auto/workers-suggest');
             if (!res || !res.ok) throw new Error(errText(res));
             const w = document.getElementById('gv-auto-workers');
             if (w && Number.isFinite(res.workers)) w.value = res.workers;
-            const saved = await _saveAutoSettings(true);
-            if (!saved) return;
             Toast.info(res.mem_available_mb > 0
-                ? _tr('geneva.auto.workers_tuned', {
+                ? _tr('geneva.auto.workers_suggest', {
                     workers: res.workers, cpu: res.cpu,
                     mem: res.mem_available_mb })
-                : _tr('geneva.auto.workers_tuned_unknown', {
+                : _tr('geneva.auto.workers_suggest_unknown', {
                     workers: res.workers }));
         } catch (e) {
             Toast.error(errText(e));

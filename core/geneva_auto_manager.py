@@ -81,7 +81,7 @@ def state_path() -> str:
 
 
 def auto_settings(cfg=None) -> dict:
-    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–64)."""
+    """``geneva.auto`` с пределами (``max_groups`` 1–64, ``workers`` 1–64)."""
     if cfg is None:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -2033,7 +2033,7 @@ class GenevaAutoManager:
 
     def update_settings(self, values: dict) -> dict:
         """Настройки с карточки «Авто»: ``workers`` (1–64), ``max_groups``
-        (1–8), ``help_tunnels`` (bool) и ``exclude`` (адреса серверов,
+        (1–64), ``help_tunnels`` (bool) и ``exclude`` (адреса серверов,
         списком или текстом через пробел, запятую или строку). Новое
         число воркеров действует со следующего круга подбора, число
         групп — со следующего применения, исключения — со следующего

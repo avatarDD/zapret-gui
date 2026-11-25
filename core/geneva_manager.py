@@ -50,6 +50,7 @@ import time
 from collections import deque
 
 from core import geneva_ext
+from core import geneva_auto as ga
 from core.log_buffer import log
 
 
@@ -61,10 +62,12 @@ PROTO = 1
 RUN_QUEUE = 310
 EVAL_QUEUE = 311
 # Группы режима «Авто»: свой ``geneva run`` на каждую стратегию, очереди
-# 340..340+N-1 (N — geneva.auto.max_groups, до 8). Правила ставит
-# zapret-gui (core/geneva_auto_fw), у процессов ``--firewall none``.
+# 340..340+N-1 (N — geneva.auto.max_groups). Правила ставит zapret-gui
+# (core/geneva_auto_fw), у процессов ``--firewall none``. Граница — та
+# же константа, что у валидатора карточки, чтобы применение не
+# отказывало на сохранённых настройках.
 AUTO_QUEUE_BASE = 340
-AUTO_QUEUE_MAX = 8
+AUTO_QUEUE_MAX = ga.MAX_GROUPS_LIMIT
 # Подборы «Авто» рядом (geneva.auto.split_workers): слот 0 — задача
 # ручного подбора (очередь 311), слоты 1–3 — свои процессы на очередях
 # 312–314. При делении у каждого слота блок из 128 портов (до двух
