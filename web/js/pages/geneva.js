@@ -27,6 +27,17 @@ const GenevaPage = (() => {
     let _settingsFilled = false;
     let _library = [];
     let _last = null;
+    let _detectMode = '';    // 'absent' | 'broken' | 'ok' — для перерисовки блока версии
+
+    // Выбор версии релиза и транспорт скачивания — общий под-компонент
+    // (см. components/setup_ui.js), тот же, что у установки
+    // sing-box/mihomo/awg. apiBase '/api/geneva' ждёт GET /releases и
+    // POST /install с {tag, transport} (пустой tag — последний релиз).
+    const extras = InstallExtras.create({
+        globalPath: 'GenevaPage.extras',
+        apiBase: '/api/geneva',
+        onChange: () => _renderInstallExtras(),
+    });
 
     const VERDICT = {
         working:    ['status-ok', 'Стратегия срабатывает на трафике'],
@@ -457,7 +468,8 @@ const GenevaPage = (() => {
         await Promise.all([_refresh(), _loadConfig(),
                            S('auto') ? _loadNat() : null,
                            S('library') ? loadLib() : null,
-                           S('found') ? _loadFound() : null]);
+                           S('found') ? _loadFound() : null,
+                           extras.loadTransports()]);
         // Пока ждали ответы, со страницы ушли (destroy) или её
         // перерисовали: опрос от старого рендера тёк бы вечно.
         if (token !== _renderToken) return;
@@ -1192,15 +1204,35 @@ const GenevaPage = (() => {
 
     /* ───────── движок geneva ───────── */
 
+    // Блок «версия + транспорт» под кнопкой установки. В состояниях
+    // «не установлен»/«сломан» кнопка уже есть рядом — дополнительная
+    // не нужна; в нормальном состоянии кнопка появляется только когда
+    // выбран конкретный тег (без выбора ставить поверх той же версии
+    // нечего).
+    function _installExtrasHtml() {
+        const btn = _detectMode === 'ok' && extras.selectedTag()
+            ? '<button class="btn btn-primary btn-sm" data-action="install"'
+              + ' style="margin-top:6px;">Установить выбранную</button>'
+            : '';
+        return extras.optionsHtml() + btn;
+    }
+
+    function _renderInstallExtras() {
+        const el = document.getElementById('gv-install-extras');
+        if (el) el.innerHTML = _installExtrasHtml();
+    }
+
     function _renderDetect(d) {
         const el = document.getElementById('gv-detect');
         if (!el) return;
         if (!d.installed) {
+            _detectMode = 'absent';
             el.innerHTML = `
                 <div class="gv-note">
                     geneva_c не установлен. Сборка ставится из официального релиза
                     <a href="https://github.com/avatarDD/geneva_c/releases" target="_blank" rel="noopener">avatarDD/geneva_c</a>
                     с проверкой sha256.
+                    <div id="gv-install-extras" style="margin:8px 0;">${_installExtrasHtml()}</div>
                     <button class="btn btn-primary btn-sm" data-action="install">Установить</button>
                 </div>`;
             return;
@@ -1211,21 +1243,27 @@ const GenevaPage = (() => {
         // нужно ставить заново. Без этой кнопки выхода из состояния не
         // было: «Обновить» появлялась только при известной версии.
         if (!d.version) {
+            _detectMode = 'broken';
             const why = d.hint || 'версию узнать не удалось — бинарник не отвечает на «geneva version --json»';
             el.innerHTML = `<div class="gv-note">
                 <div class="text-error" style="margin-bottom:6px;">${esc(why)}</div>
                 <div class="text-muted" style="font-size:12px;margin-bottom:6px;">
                     <span class="gv-mono">${esc(d.binary)}</span></div>
+                <div id="gv-install-extras" style="margin:8px 0;">${_installExtrasHtml()}</div>
                 <button class="btn btn-primary btn-sm" data-action="install">Переустановить</button>
             </div>`;
             return;
         }
+        _detectMode = 'ok';
+        // «Обновить до X» всегда ставит X (последний релиз), даже если в
+        // селекторе ниже выбран тег — иначе подпись кнопки врала бы.
         const update = rel.has_update
-            ? `<button class="btn btn-primary btn-sm" data-action="install">Обновить до ${esc(rel.latest)}</button>`
+            ? `<button class="btn btn-primary btn-sm" data-action="install-latest">Обновить до ${esc(rel.latest)}</button>`
             : '';
         el.innerHTML = `<div class="text-muted gv-row" style="font-size:12px;margin-bottom:6px;">
             <span>geneva ${esc(d.version)} · ${esc(d.arch)} · ${esc(d.binary)}</span>
             ${update}</div>
+            <div id="gv-install-extras" style="margin:8px 0;">${_installExtrasHtml()}</div>
             ${d.hint ? `<div class="text-error" style="font-size:12px;">${esc(d.hint)}</div>` : ''}`;
     }
 
@@ -1346,10 +1384,14 @@ const GenevaPage = (() => {
         }
     }
 
-    async function _install() {
+    async function _install(latest) {
+        // Тело собирает InstallExtras: выбранный тег (пусто — последний
+        // релиз) и транспорт скачивания, если он не «напрямую».
+        // «Обновить до X» сбрасывает выбор тега: кнопка обещает X.
+        if (latest) extras.onTagChange('');
         Toast.success('Скачиваю geneva из релиза…');
         try {
-            const res = await API.post('/api/geneva/install', {}, { timeout: 180000 });
+            const res = await API.post('/api/geneva/install', extras.installBody(), { timeout: 180000 });
             Toast.success('geneva установлен: ' + (res.version || res.tag || ''));
             if (res.restart_needed) {
                 const ok = await Confirm.show('Перезапустить geneva?',
@@ -1698,9 +1740,10 @@ const GenevaPage = (() => {
             return;
         }
         if (t.dataset.action === 'install') return _install();
+        if (t.dataset.action === 'install-latest') return _install(true);
         if (t.dataset.use) return _setStrategy(t.dataset.use, 'search');
         if (t.dataset.useLib) return _setStrategy(t.dataset.useLib, 'library');
     }
 
-    return { render, destroy };
+    return { render, destroy, extras };
 })();

@@ -2404,6 +2404,7 @@ const i18n_en_text = {
 "Стратегия сохранена": "Strategy saved",
 "Лог пуст.": "The log is empty.",
 "Скачиваю geneva из релиза…": "Downloading geneva from the release…",
+"Установить выбранную": "Install selected",
 "geneva установлен: {0}": "geneva installed: {0}",
 "geneva установлен:": "geneva installed:",
 "Перезапустить geneva?": "Restart geneva?",

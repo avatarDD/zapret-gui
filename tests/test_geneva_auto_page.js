@@ -102,6 +102,21 @@ function makeSandbox({ auto, found, lists, suggest, lang = 'ru',
         },
         Toast: { success() {}, error() {}, info() {}, warning() {} },
         Confirm: { show: () => { calls.confirm++; return Promise.resolve(confirm); } },
+        // Выбор версии релиза (components/setup_ui.js) в песочницу не
+        // грузим: страница зовёт его на верхнем уровне, а тестировать
+        // здесь — поведение «Авто», не селектор версий.
+        InstallExtras: {
+            create() {
+                return {
+                    optionsHtml: () => '',
+                    installBody: () => ({}),
+                    selectedTag: () => '',
+                    loadTransports: () => Promise.resolve(),
+                    loadReleases: () => Promise.resolve(),
+                    onTagChange() {}, onTransportChange() {},
+                };
+            },
+        },
     };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
