@@ -9,7 +9,11 @@
  *     сервисы с цветным статусом, тексты из i18n (ru и en);
  *   - включение: ответ need_confirm → подтверждение человека → повтор
  *     с confirm:true; отказ в подтверждении — второго запроса нет;
- *   - кнопка «Сбросить» шлёт ключ сервиса.
+ *   - кнопка «Сбросить» шлёт ключ сервиса;
+ *   - «Сохранить»/«Авто» с пустым числовым полем не отправляет его
+ *     вовсе (сервер не меняет пропущенную настройку), заполненные —
+ *     уходят как есть; после перерисовки поля заново заполняются
+ *     с сервера, а не остаются со значениями шаблона.
  */
 
 const assert = require('node:assert');
@@ -456,4 +460,64 @@ test('профили geneva 2.0: в карточке имя профиля, а �
     const text = env.elements.get('gv-auto').innerHTML;
     assert.match(text, /p1-tcp-X1/);
     assert.match(text, /p2-tcp-X2/);
+});
+
+test('«Сохранить» с пустыми полями не отправляет числа', async () => {
+    // Регрессия: пустое поле уходило как null, сервер отвечал
+    // «max_groups: целое от 1 до 8» и не сохранял ничего.
+    const env = makeSandbox({ auto: AUTO_ON });
+    const root = await renderAuto(env);
+    const btn = { dataset: { action: 'auto-settings' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    const posts = env.calls.post.filter(p => p[0] === '/api/geneva/auto/settings');
+    assert.strictEqual(posts.length, 1);
+    const body = posts[0][1];
+    assert.strictEqual('workers' in body, false);
+    assert.strictEqual('max_groups' in body, false);
+});
+
+test('«Авто» с пустым полем групп сохраняет только потоки', async () => {
+    // Сценарий из баг-репорта: «Авто» подобрал потоки, поле групп
+    // пустое — сохранить должно потоки, не ругаясь на группы.
+    const env = makeSandbox({ auto: AUTO_ON });
+    const root = await renderAuto(env);
+    const btn = { dataset: { action: 'auto-workers-tune' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    const posts = env.calls.post.filter(p => p[0] === '/api/geneva/auto/settings');
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0][1].workers, 4);
+    assert.strictEqual('max_groups' in posts[0][1], false);
+});
+
+test('заполненные поля сохраняются как есть', async () => {
+    const auto = Object.assign({}, AUTO_ON,
+        { workers: 5, max_groups: 3, help_tunnels: true });
+    const env = makeSandbox({ auto });
+    const root = await renderAuto(env);
+    assert.strictEqual(String(env.elements.get('gv-auto-workers').value), '5');
+    assert.strictEqual(String(env.elements.get('gv-auto-groups').value), '3');
+    const btn = { dataset: { action: 'auto-settings' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    const posts = env.calls.post.filter(p => p[0] === '/api/geneva/auto/settings');
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0][1].workers, 5);
+    assert.strictEqual(posts[0][1].max_groups, 3);
+    assert.strictEqual(posts[0][1].help_tunnels, true);
+});
+
+test('повторная отрисовка заново заполняет поля с сервера', async () => {
+    // До исправления отметка «поля уже заполнены» не сбрасывалась при
+    // перерисовке: карточка показывала значения шаблона, и «Сохранить»
+    // молча понижал настроенное раньше.
+    const auto = Object.assign({}, AUTO_ON, { workers: 5, max_groups: 3 });
+    const env = makeSandbox({ auto });
+    await renderAuto(env);
+    const w = env.elements.get('gv-auto-workers');
+    const g = env.elements.get('gv-auto-groups');
+    // перерисовка пересоздала поля со значениями шаблона
+    w.value = '';
+    g.value = '';
+    await renderAuto(env);
+    assert.strictEqual(String(w.value), '5');
+    assert.strictEqual(String(g.value), '3');
 });

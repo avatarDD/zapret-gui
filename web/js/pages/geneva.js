@@ -117,6 +117,12 @@ const GenevaPage = (() => {
         }
         _formFilled = false;
         _settingsFilled = false;
+        // Поля «Авто» пересоздаются шаблоном со значениями по умолчанию —
+        // отметки «уже заполнено» тоже сбрасываем: после возврата на
+        // страницу опрос заново заполняет поля и галочки, иначе
+        // «Сохранить» молча понижает настроенное.
+        _autoSettingsShown = false;
+        _listsShown = false;
         _sections = new Set(opts.sections || ALL_SECTIONS);
         const S = id => _sections.has(id);
         const header = opts.header === false ? '' : `
@@ -936,10 +942,14 @@ const GenevaPage = (() => {
     let _autoSettingsShown = false;
 
     function _renderAutoSettings(a) {
-        // поля заполняются с сервера один раз: опрос не должен затирать
-        // то, что пользователь сейчас вводит
+        // поля заполняются с сервера один раз за перерисовку: опрос не
+        // должен затирать то, что пользователь сейчас вводит. Во
+        // вкладке «Скан стратегий» (sections:['search']) карточки нет —
+        // выходим, не тратя однократность: иначе после хаба основная
+        // страница останется со значениями шаблона.
         if (_autoSettingsShown || !a) return;
         const w = document.getElementById('gv-auto-workers');
+        if (!w) return;
         const g = document.getElementById('gv-auto-groups');
         if (w && a.workers) w.value = a.workers;
         if (g && a.max_groups) g.value = a.max_groups;
@@ -952,10 +962,24 @@ const GenevaPage = (() => {
     // quiet — без тоста «Сохранено»: кнопка «Авто» экономит его для
     // своего итогового сообщения. Возврат — сохранилось ли.
     async function _saveAutoSettings(quiet) {
-        const w = parseInt((document.getElementById('gv-auto-workers') || {}).value, 10);
-        const g = parseInt((document.getElementById('gv-auto-groups') || {}).value, 10);
+        // Пустое или нечисловое поле не отправляем вовсе: сервер не
+        // меняет пропущенную настройку. Иначе «Сохранить» после
+        // перерисовки страницы или с полем, которое браузер не признал
+        // числом (type="number" отдаёт пустую строку), отдаёт
+        // «max_groups: целое от 1 до 8» и не сохраняет ничего.
+        const num = id => {
+            const el = document.getElementById(id);
+            const raw = el ? String(el.value || '').trim() : '';
+            if (!raw) return null;
+            const n = Number(raw);
+            return Number.isFinite(n) ? n : null;
+        };
+        const body = {};
+        const w = num('gv-auto-workers');
+        const g = num('gv-auto-groups');
+        if (w !== null) body.workers = w;
+        if (g !== null) body.max_groups = g;
         const t = document.getElementById('gv-auto-tunnels');
-        const body = { workers: w, max_groups: g };
         if (t) body.help_tunnels = !!t.checked;
         // Галочки режима вынесены из блока списков в карточку — карточная
         // кнопка сохраняет всё, что видно на экране.
@@ -983,7 +1007,7 @@ const GenevaPage = (() => {
             const res = await API.get('/api/geneva/auto/workers-suggest');
             if (!res || !res.ok) throw new Error(errText(res));
             const w = document.getElementById('gv-auto-workers');
-            if (w) w.value = res.workers;
+            if (w && Number.isFinite(res.workers)) w.value = res.workers;
             const saved = await _saveAutoSettings(true);
             if (!saved) return;
             Toast.info(res.mem_available_mb > 0
