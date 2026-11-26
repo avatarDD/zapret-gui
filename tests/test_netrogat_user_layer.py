@@ -233,6 +233,11 @@ class TestHostlistManagerUserLayer(Sandbox):
         added = self.hm.add_domains("netrogat", ["manual.ru", "second.ru"])
 
         self.assertEqual(added, 2)
+        # Итог отдельно от user-слоя: однажды на CI user-файл не
+        # появился, а по «None != []» было не понять, вся ли запись
+        # провалилась или только страховочный слой.
+        self.assertEqual(self._read("netrogat.txt"),
+                         list(DEFAULT_NETROGAT) + ["manual.ru", "second.ru"])
         self.assertEqual(self._read("netrogat.user.txt"),
                          ["manual.ru", "second.ru"])
 
@@ -243,6 +248,7 @@ class TestHostlistManagerUserLayer(Sandbox):
         removed = self.hm.remove_domains("netrogat", ["manual.ru"])
 
         self.assertEqual(removed, 1)
+        self.assertEqual(self._read("netrogat.txt"), list(DEFAULT_NETROGAT))
         self.assertEqual(self._read("netrogat.user.txt"), [])
 
     def test_reset_to_defaults_clears_user_layer(self):
