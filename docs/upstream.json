@@ -39,22 +39,22 @@
       "id": "zapret2",
       "repo": "bol-van/zapret2",
       "kind": "release",
-      "pinned": "v1.0.7",
-      "verified_at": "2026-11-17",
+      "pinned": "v1.0.8",
+      "verified_at": "2026-11-26",
       "skill": ".claude/skills/nfqws2-strategies/SKILL.md",
       "mentions": [
         ".claude/skills/nfqws2-strategies/SKILL.md",
         "web/js/utils/nfqws2_spec.js"
       ],
       "vendored": {
-        "import/lua/zapret-lib.lua": "6bf528fef1f0fc3c65e189216fc8a06bb873f6e25d1c29d2bfa4695a09b73440",
-        "import/lua/zapret-antidpi.lua": "6d1fa9168e5de1682fef91fd174f68b58c50f6739ef00f42ca7db2b940b6246d",
-        "import/lua/zapret-auto.lua": "23a9b99a776d868d92f4cc0ee5110f5c1f12fe746620d9c0337022dbc2f52df0",
-        "import/lua/zapret-obfs.lua": "75d91452eae06c672aecebe87d753fa968f939d95452a6103292aed658c533f3",
+        "import/lua/zapret-lib.lua": "79046853613128d8fcba19921a90ec91187f877ead6b893b155c1d7f7804e74e",
+        "import/lua/zapret-antidpi.lua": "ff6165a12d37915a98caef6462fe5bdd0138e567e447d1f65e33b5bb4e398424",
+        "import/lua/zapret-auto.lua": "030eb5e592438f47bc22d8f425f000f193649f80078aaebeb4e2f91622e9f4c6",
+        "import/lua/zapret-obfs.lua": "a6a3808d1dd21977aeae34603289b46e09dd8ebc4aef31ba6544224faaa2444b",
         "import/lua/zapret-pcap.lua": "6866c37c92fbc62075accf94228da48af618c7f416edc682eba99b2196e05f45",
         "import/lua/zapret-tests.lua": "82664cb50a751a531b63dce094ac03de5045b16b489e726ff32a9a1034811459"
       },
-      "note": "core-lua жёстко привязана к бинарнику через NFQWS2_COMPAT_VER, но защита _protected_core_lua срабатывает только на СМЕНЕ compat-версии. Внутри одной (все 1.0…1.0.4 = 6) наш бандл перезаписывает upstream-копию, поэтому отставший бандл откатывает пользователю апстримные фиксы. Отсюда побайтовый пиннинг. 1.0.7 CLI nfqws2 не менял (у winws2 — --wf-priority), из core-lua тронул только zapret-obfs (udp2icmp: cgnat, id_lifetime), но поменял поведение списков: префикс ! в хостлисте — локальное исключение (нормализатор и list_lint его понимают), а повторная регистрация того же файла в профиле в списке того же типа валит запуск — NFQWSManager._dedup_list_files убирает повторы из argv."
+      "note": "core-lua жёстко привязана к бинарнику через NFQWS2_COMPAT_VER, но защита _protected_core_lua срабатывает только на СМЕНЕ compat-версии. Внутри одной (все 1.0…1.0.8 = 6) наш бандл перезаписывает upstream-копию, поэтому отставший бандл откатывает пользователю апстримные фиксы. Отсюда побайтовый пиннинг. 1.0.8 CLI nfqws2 не менял: правки поведения — autohostlist с ipcache-hostname, порт-стрип hostname при детекте DPI-redirect, пересчёт L3-длин у frag_off-пакетов, края L4-чексуммы (UDP-ноль запрещён), предупреждение о пустом не-последнем профиле, setgroups в can_drop_root (user-ns), шаблоны копируют filter_mark/filter_ssid_neg. core-lua: zapret-lib — ipv6-литералы в dissect_url, u16add/u32add вместо +1 (wraparound), frag_off, xoob из discopy, длина TS-опции, get_desync_instance_id; zapret-auto — stopif исправлен (откат instance-id и аргументов через apply_execution_plan), is_dpi_redirect сравнивает IP-литералы (pton) и без учёта регистра; zapret-antidpi — direction_check без «any» (определение в lib не менялось, наши файлы зовут без «any»); zapret-obfs — u32add(th_ack,-1), длина TS-данных."
     },
     {
       "id": "sing-box",
