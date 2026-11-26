@@ -2187,6 +2187,21 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
         if progress_cb:
             progress_cb("install", 90, "Копирование бинарника...")
 
+        # Прежний бинарник — в бэкап: если новый не пройдёт проверку
+        # запуска, вернём прежний на место (схема та же, что у
+        # манифестного пути в _install_binary_file). Без этого при
+        # провале оставался os.unlink — и роутер без движка до
+        # перезагрузки; для geneva это как раз сценарий «Авто».
+        backup = cfg["dest"] + ".prev"
+        had_backup = False
+        try:
+            if os.path.isfile(cfg["dest"]):
+                shutil.copyfile(cfg["dest"], backup)
+                shutil.copystat(cfg["dest"], backup)
+                had_backup = True
+        except OSError:
+            had_backup = False
+
         if not install_binary(final_path, cfg["dest"]):
             return {"ok": False, "error": "Не удалось установить бинарник"}
         if unpacked_tmp:
@@ -2197,13 +2212,43 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
 
         check = verify_installed_binary(cfg["dest"], _probe_args(cfg))
         if not check.get("ok"):
+            restored = False
+            if had_backup:
+                try:
+                    os.replace(backup, cfg["dest"])
+                    restored = True
+                except OSError:
+                    pass
+            if not restored:
+                try:
+                    os.unlink(cfg["dest"])
+                except OSError:
+                    pass
+            log.warning("ext_installer: %s не прошёл проверку запуска (%s)%s"
+                        % (cfg["dest"], check.get("error"),
+                           " — вернул прежнюю версию" if restored else ""),
+                        source="ext_installer")
+            if check.get("not_a_binary"):
+                # Не «сборка не под эту архитектуру», а «скачан не тот
+                # файл» (скрипт вместо бинарника) — переустановка не
+                # поможет, сообщение должно быть честным.
+                return {"ok": False, "exec_error": True,
+                        "not_a_binary": True, "restored": restored,
+                        "error": "Скачанный файл: %s" % check.get("error")}
+            return {"ok": False, "exec_error": True, "restored": restored,
+                    "error": "Скачанный файл не запускается на этом"
+                             " устройстве (%s).%s"
+                             % (check.get("error"),
+                                " Прежняя версия возвращена на место."
+                                if restored else "")}
+
+        # Успех — бэкап отработал своё: как у манифестного пути, не
+        # оставляем копию прежнего бинарника (0755) в каталоге PATH.
+        if had_backup:
             try:
-                os.unlink(cfg["dest"])
+                os.unlink(backup)
             except OSError:
                 pass
-            return {"ok": False, "exec_error": True,
-                    "error": "Скачанный файл не запускается на этом"
-                             " устройстве (%s)" % check.get("error")}
 
         # 6. Проверяем
         version = _get_version(cfg["dest"])
@@ -2266,6 +2311,12 @@ def uninstall_binary(name: str) -> dict:
                                          or "").strip())}
         if os.path.isfile(cfg["dest"]):
             os.unlink(cfg["dest"])
+        # Бэкап прошлой установки (схема .prev): «Удалить движок»
+        # прибирает и его — иначе копия прежнего бинарника навсегда
+        # оставалась в каталоге PATH.
+        prev = cfg["dest"] + ".prev"
+        if os.path.isfile(prev):
+            os.unlink(prev)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}

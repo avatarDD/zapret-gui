@@ -1229,3 +1229,146 @@ class TestInstallBinaryReplaceRunning(unittest.TestCase):
                                    os.path.join(td, "geneva")))
             # И мусора в каталоге не осталось
             self.assertEqual(os.listdir(td), [])
+
+
+class TestDirectPathPrevBackup(unittest.TestCase):
+    """Прямой путь установщика не оставляет роутер без движка.
+
+    Регрессия, найденная ревью ETXTBSY-фикса: прямой путь (geneva и
+    запасной источник opera/tgproto) при провале проверки запуска делал
+    ``os.unlink(dest)`` — без бэкапа. До ETXTBSY-фикса «Авто» до этой
+    строки не доходил (обновление отваливалось раньше, движок
+    оставался живым), после — доходит, и битая сборка оставляла роутер
+    без бинарника до перезагрузки. Схема та же, что у манифестного
+    ``_install_binary_file``: прежний файл — в ``.prev``, откат при
+    провале, флаг ``restored`` в ответе.
+    """
+
+    OLD = b"old-binary-" + b"x" * 32
+    NEW = b"new-binary-" + b"y" * 32
+
+    def _release(self):
+        # Тег новее пина: у allow_unpinned-бинарника (geneva) сверка
+        # идёт по SHA256SUMS релиза, то есть через замоканный
+        # _verify_downloaded_file, — манифестный хэш не мешает.
+        return {
+            "tag_name": "v2.0.4",
+            "assets": [
+                {"name": "geneva-2.0.4-linux-aarch64.tar.gz",
+                 "browser_download_url": "https://example.invalid/x"},
+                {"name": "SHA256SUMS",
+                 "browser_download_url": "https://example.invalid/s"},
+            ],
+        }
+
+    def _install(self, dest, verify):
+        """Прогнать прямой путь с реальным install_binary и файлами.
+
+        Реальны: файловая система (dest, источник, .prev) и install_binary.
+        Замоканы: сеть (github_release/download_file), сверка sha,
+        распаковка (источник уже «распакован») и проверка запуска —
+        её результат и есть параметр ``verify``.
+        """
+        with tempfile.TemporaryDirectory(prefix="prev-") as td:
+            src = os.path.join(td, "newbin")
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+            cfg = dict(ebi.BINARIES["geneva"], dest=dest)
+            with mock.patch("core.ext_binary_installer.github_release",
+                            return_value=self._release()), \
+                 mock.patch("core.ext_binary_installer."
+                            "_verify_downloaded_file",
+                            return_value={"ok": True}), \
+                 mock.patch("core.ext_binary_installer.download_file",
+                            return_value=True), \
+                 mock.patch("core.ext_binary_installer._unpack_if_needed",
+                            return_value=(src, None, "")), \
+                 mock.patch("core.ext_binary_installer."
+                            "verify_installed_binary",
+                            return_value=verify), \
+                 mock.patch("core.ext_binary_installer._get_version",
+                            return_value="2.0.1"), \
+                 mock.patch("core.ext_binary_installer.detect_arch",
+                            return_value="aarch64"), \
+                 mock.patch("core.ext_binary_installer.tempfile."
+                            "NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = src
+                mtmp.return_value = tmp
+                res = ebi.install_binary_by_name("geneva", _cfg=cfg)
+        return res
+
+    def test_verify_failure_restores_previous_binary(self):
+        with tempfile.TemporaryDirectory(prefix="prev1-") as td:
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            res = self._install(
+                dest, verify={"ok": False, "error": "exit 1"})
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["exec_error"])
+            self.assertTrue(res["restored"])
+            # На месте — прежняя версия, бэкап израсходован.
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
+            self.assertFalse(os.path.exists(dest + ".prev"))
+            self.assertIn("не запускается", res["error"])
+            # Пользователь видит, что прежняя версия вернулась на место,
+            # а не «движок удалён» (как у манифестного пути).
+            self.assertIn("Прежняя версия возвращена на место.",
+                          res["error"])
+
+    def test_verify_failure_without_previous_removes_new(self):
+        with tempfile.TemporaryDirectory(prefix="prev2-") as td:
+            dest = os.path.join(td, "geneva")
+            res = self._install(
+                dest, verify={"ok": False, "error": "exit 1"})
+            self.assertFalse(res["ok"])
+            self.assertFalse(res["restored"])
+            # Прежнего не было — нового тоже не оставляем: он не работает.
+            self.assertFalse(os.path.exists(dest))
+
+    def test_success_cleans_backup(self):
+        # Как у манифестного пути (test_good_binary_replaces_and_cleans_
+        # backup): бэкап — страховка на случай провала verify, успех
+        # её отработал — копии прежнего бинарника в PATH не остаётся.
+        with tempfile.TemporaryDirectory(prefix="prev3-") as td:
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            res = self._install(dest, verify={"ok": True})
+            self.assertTrue(res["ok"], res)
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.NEW)
+            self.assertFalse(os.path.exists(dest + ".prev"))
+
+    def test_uninstall_removes_backup_too(self):
+        with tempfile.TemporaryDirectory(prefix="prev5-") as td:
+            dest = os.path.join(td, "geneva")
+            for path, payload in ((dest, self.NEW),
+                                  (dest + ".prev", self.OLD)):
+                with open(path, "wb") as f:
+                    f.write(payload)
+            cfg = {"dest": dest, "install_kind": "binary"}
+            with mock.patch.dict(ebi.BINARIES, {"testbin": cfg}):
+                res = ebi.uninstall_binary("testbin")
+            self.assertTrue(res["ok"], res)
+            self.assertFalse(os.path.exists(dest))
+            self.assertFalse(os.path.exists(dest + ".prev"))
+
+    def test_not_a_binary_flag_surfaces(self):
+        with tempfile.TemporaryDirectory(prefix="prev4-") as td:
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            res = self._install(
+                dest, verify={"ok": False, "not_a_binary": True,
+                              "error": "shebang"})
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["not_a_binary"])
+            self.assertTrue(res["restored"])
+            self.assertTrue(res["error"].startswith("Скачанный файл:"))
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
