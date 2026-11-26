@@ -2771,6 +2771,7 @@ const i18n_en_server = {
 "Скачанный архив: {0}": "Downloaded archive: {0}",
 "Скачанный файл не запускается на этом устройстве ({0})": "The downloaded file does not run on this device ({0})",
 "Скачанный файл не запускается на этом устройстве ({0}).{1}": "The downloaded file does not run on this device ({0}).{1}",
+"Скачанный файл: {0}": "Downloaded file: {0}",
 "Скачивание {0}...": "Downloading {0}...",
 "Скачиваю…": "Downloading…",
 "Скрипт blockcheck не найден. Установите zapret2 или задайте zapret.blockcheck2_path в конфиге.": "The blockcheck script not found. Install zapret2 or set zapret.blockcheck2_path in the config.",
