@@ -171,8 +171,11 @@ from core.mcp import registry
 # geneva_auto_priority, geneva_auto_pin, geneva_auto_lists — списки и
 # флажки; без аргументов только читает, но открывается тем же
 # разрешением, что и запись).
+# Discussion #491: + 1 на чтение (device_connections — склейка
+# «устройство → соединения → домены» для AI; вся логика в
+# core/device_traffic.py).
 BY_SCOPE = {
-    "read": 54,
+    "read": 55,
     "control": 21,
     "strategies_write": 12,
     "config_write": 2,
@@ -259,6 +262,8 @@ class TestToolCounts(unittest.TestCase):
         "lists_list", "lua_functions_list",
         # S4 — перехват и трафик
         "firewall_status", "traffic_recent",
+        # Discussion #491 — соединения одного устройства LAN.
+        "device_connections",
         # «Куда пойдёт сайт»
         "site_trace",
         # Быстрый ремонт: часы, DNS, маршрут
