@@ -1,0 +1,59 @@
+# Тесты на каждый push в main и каждый PR.
+#
+# Раньше pytest в CI вообще не гонялся: шесть тестов, зависящих от
+# окружения dev-бокса (iptables без root, multicall coreutils, запись в
+# /opt/etc), падали все разом и только локально — герметизированы в
+# tests/{test_routing_device_leak,test_installer_cross_fs,
+# test_diagnostics_conflicts,test_ext_binary_installer,
+# test_api_tgproxy}.py. Этот воркфлоу держит регресс подальше от main.
+#
+# Python — 3.14, как на dev-боксе, где набор выверен; Entware на
+# роутерах ходит на ~3.11, и если возникнет желание поставить матрицу,
+# сначала прогнать кандидат локально.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: "pytest: весь набор"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      # pyyaml — иначе YAML-сторожа воркфлоу (tests/test_release_workflows.py
+      # и др.) молча уходят в skipTest и в CI не выполняются.
+      - run: python3 -m pip install --quiet pytest pyyaml
+      - name: Запуск
+        run: python3 -m pytest tests/ -q
+
+  node:
+    name: "node --test: JS-тесты"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Запуск
+        run: node --test tests/*.js
+
+  lint:
+    name: "make lint: синтаксис"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Запуск
+        run: make lint

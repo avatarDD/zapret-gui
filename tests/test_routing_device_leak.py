@@ -132,7 +132,12 @@ class TestDoctorDeviceChain(unittest.TestCase):
                                return_value=over.get("via", "WARPv2_83")), \
              mock.patch.object(killswitch, "status",
                                return_value={"enabled": False,
-                                             "present": False}):
+                                             "present": False}), \
+             mock.patch.object(doctor, "_run", return_value=(0, "", "")), \
+             mock.patch("core.routing.nftset_backend.fw4_present",
+                        return_value=False), \
+             mock.patch("core.routing.manager._is_ndms_native_iface",
+                        return_value=False):
             return doctor._diagnose_device_rule(self._rule())
 
     def _failed(self, checks):
