@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1149,3 +1150,82 @@ class TestGenevaFollowsLatestRelease(unittest.TestCase):
                          "geneva-2.0.2-linux-aarch64.tar.gz")
         self.assertTrue(res["sha256_pinned"])
         self.assertTrue(res["sha256_verified"])
+
+
+class TestInstallBinaryReplaceRunning(unittest.TestCase):
+    """install_binary меняет файл, который сейчас исполняется.
+
+    Регрессия из обсуждения с пользователем: обновление geneva при
+    включённом «Авто» падало
+    «[Errno 26] Text file busy: '/opt/usr/bin/geneva'» — прежний
+    install_binary копировал прямо поверх работающего бинарника,
+    а open() на запись исполняемого файла ядро запрещает. Правильная
+    схема — копия во временный файл рядом с целью + атомарный
+    os.replace (меняет ссылку в каталоге, не трогая inode процесса).
+    """
+
+    def test_replaces_executing_binary(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory(prefix="etxtbsy-") as td:
+            dest = os.path.join(td, "geneva")
+            shutil.copy2(sys.executable, dest)
+            victim = subprocess.Popen(
+                [dest, "-c", "import time; time.sleep(30)"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                # Жертва точно запущена: ждём, пока она встанет в sleep
+                # (Popen возвращает управление раньше exec). Исчерпание
+                # цикла — ошибка теста, а не молчаливый успех: без
+                # for-else он мог пройти впустую, не проверив живой
+                # случай.
+                for _ in range(100):
+                    if victim.poll() is not None:
+                        self.fail("процесс-жертва не запустился")
+                    try:
+                        os.kill(victim.pid, 0)
+                        # exec уже прошёл, если cmdline смотрится в нас
+                        with open("/proc/%d/cmdline" % victim.pid, "rb") as f:
+                            if b"sleep(30)" in f.read():
+                                break
+                    except OSError:
+                        pass
+                    time.sleep(0.05)
+                else:
+                    self.fail("жертва не исполнилась за 5 с — живой случай не проверен")
+                src = os.path.join(td, "newbin")
+                payload = b"stub-not-executed-" + os.urandom(32)
+                with open(src, "wb") as f:
+                    f.write(payload)
+                self.assertTrue(ebi.install_binary(src, dest))
+                with open(dest, "rb") as f:
+                    self.assertEqual(f.read(), payload)
+                # Работающий процесс продолжает жить на старом inode —
+                # подмена через rename его не трогает.
+                self.assertIsNone(victim.poll())
+            finally:
+                victim.terminate()
+                victim.wait()
+
+    def test_installs_into_fresh_dest(self):
+        with tempfile.TemporaryDirectory(prefix="etxtbsy2-") as td:
+            src = os.path.join(td, "newbin")
+            payload = b"stub-not-executed-" + os.urandom(32)
+            with open(src, "wb") as f:
+                f.write(payload)
+            dest = os.path.join(td, "sub", "geneva")
+            self.assertTrue(ebi.install_binary(src, dest))
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), payload)
+            self.assertTrue(os.access(dest, os.X_OK))
+            # Временного файла от подмены не осталось
+            self.assertEqual(
+                sorted(os.listdir(os.path.dirname(dest))), ["geneva"])
+
+    def test_missing_source_returns_false(self):
+        with tempfile.TemporaryDirectory(prefix="etxtbsy3-") as td:
+            self.assertFalse(
+                ebi.install_binary(os.path.join(td, "nope"),
+                                   os.path.join(td, "geneva")))
+            # И мусора в каталоге не осталось
+            self.assertEqual(os.listdir(td), [])

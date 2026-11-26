@@ -629,16 +629,31 @@ def download_file(url: str, dest: str, timeout: int = DOWNLOAD_TIMEOUT,
 
 
 def install_binary(source: str, dest: str) -> bool:
-    """Установить бинарник: скопировать + chmod +x."""
+    """Установить бинарник: копия рядом с целью + chmod +x + rename-подмена.
+
+    Прямое копирование в dest (``shutil.copy2(source, dest)``) открывает
+    целевой файл на запись — и если бинарник сейчас исполняется (geneva
+    «Авто» держит observe, движок и воркеров), ядро возвращает
+    ``[Errno 26] Text file busy`` и обновление падает. Поэтому пишем во
+    временный файл в том же каталоге и подменяем через ``os.replace``:
+    он меняет ссылку в каталоге, не трогая inode работающего процесса.
+    Новая версия заработает после перезапуска процесса (см.
+    ``restart_needed`` у POST /api/geneva/install).
+    """
+    staged = "%s.new-%d" % (dest, os.getpid())
     try:
-        dest_dir = os.path.dirname(dest)
-        os.makedirs(dest_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
         import shutil
-        shutil.copy2(source, dest)
-        os.chmod(dest, 0o755)
+        shutil.copy2(source, staged)
+        os.chmod(staged, 0o755)
+        os.replace(staged, dest)
         return True
     except Exception as e:
         log.warning("install_binary: %s" % e, source="ext_installer")
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
         return False
 
 
