@@ -1433,9 +1433,14 @@ def install_local_file(name: str, path: str, orig_name: str = "") -> dict:
     телефоне и загружает через форму. Проверять sha256 тут не с чем и
     незачем — файл принёс сам администратор роутера; но и молчать об
     этом не будем, отдаём warning.
+
+    Под тем же замком, что и сетевые установки: локальная загрузка
+    тоже пишет пару dest/.prev, и наложение с фоновой установкой того
+    же движка перепутало бы бэкап одного вызова с откатом другого.
     """
     try:
-        return _install_local_file(name, path, orig_name)
+        with _INSTALL_LOCK:
+            return _install_local_file(name, path, orig_name)
     finally:
         _refresh_update_row(name)
 
@@ -1736,6 +1741,30 @@ def _unpack_if_needed(path: str, member_name: str = "") -> tuple:
     return path, False, ""
 
 
+def _restore_prev(dest: str, backup: str) -> bool:
+    """Вернуть прежнюю версию из .prev: rename, при неудаче — копия.
+
+    Общая лестница отката для обоих путей установки (манифестного и
+    прямого): ``os.replace`` в одном каталоге почти не падает, но если
+    упал — копия поверх не исполняющегося файла спасает остаточные
+    случаи: проверка запуска только что не смогла выполнить новый
+    файл, на месте лежит «мусор», а не чей-то работающий процесс.
+    Возвращает True, если прежняя версия снова на месте. Бэкап не
+    «потребляется»: после успеха его прибирает вызывающий.
+    """
+    try:
+        os.replace(backup, dest)
+        return True
+    except OSError:
+        pass
+    try:
+        shutil.copyfile(backup, dest)
+        os.chmod(dest, 0o755)
+        return True
+    except OSError:
+        return False
+
+
 def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
     """Распаковать (если нужно) и положить бинарник в cfg['dest'].
 
@@ -1784,21 +1813,24 @@ def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
 
     check = verify_installed_binary(dest, _probe_args(cfg))
     if not check.get("ok"):
-        restored = False
-        if had_backup:
+        restored = _restore_prev(dest, backup) if had_backup else False
+        if restored:
+            # copyfile-фолбэк не потребляет бэкап, как os.replace:
+            # прибираем сами, чтобы не оставлять 0755-копию в PATH.
             try:
-                os.replace(backup, dest)
-                restored = True
+                os.unlink(backup)
             except OSError:
                 pass
-        if not restored:
+        else:
             try:
                 os.unlink(dest)
             except OSError:
                 pass
         log.warning("ext_installer: %s не прошёл проверку запуска (%s)%s"
                     % (dest, check.get("error"),
-                       " — вернул прежнюю версию" if restored else ""),
+                       " — вернул прежнюю версию" if restored
+                       else (" — прежняя версия осталась в %s" % backup
+                             if had_backup else "")),
                     source="ext_installer")
         if check.get("not_a_binary"):
             # Не «сборка не для этой архитектуры», а «в архиве выбран не
@@ -1812,7 +1844,11 @@ def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
                 "error": "Скачанный файл не запускается на этом устройстве"
                          " (%s).%s" % (check.get("error"),
                                        " Прежняя версия возвращена на место."
-                                       if restored else "")}
+                                       if restored else
+                                       (" Прежняя версия осталась в %s — "
+                                        "верните вручную: mv %s %s"
+                                        % (backup, backup, dest)
+                                        if had_backup else ""))}
 
     if had_backup:
         try:
@@ -1850,6 +1886,19 @@ _ENGINE_OF = {"usque": "usque", "tgwsproxy": "tgproxy", "tgproto": "tgproxy",
               "opera": "opera", "geneva": "geneva"}
 
 
+# Одна установка в каждый момент. Параллельные вызовы (двойной клик в
+# UI, фоновая проверка обновлений, мастер настройки) перепутали бы
+# жизненный цикл пары dest/.prev: бэкап одного вызова становился
+# откатом другого, os.replace на общем dest — гонкой последних
+# записей. Установки редкие, поэтому сериализуем их целиком — второй
+# вызов, дождавшись, видит совпадающую версию и завершается noop-ом.
+# Цена: «Удалить» ДРУГОГО движка ждёт чужую загрузку до конца (минуты
+# на медленном интернете) — осознанный размен против битых бэкапов.
+# Тот же замок у uninstall_binary — «Удалить» во время установки
+# убирало бы файлы из-под работающего установщика.
+_INSTALL_LOCK = threading.Lock()
+
+
 def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
                            transport: str = "", _cfg: dict = None) -> dict:
     """
@@ -1867,8 +1916,10 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
     сообщает поле `foreign_scripts` ответа.
     """
     try:
-        res = _install_binary_by_name(name, progress_cb=progress_cb,
-                                      tag=tag, transport=transport, _cfg=_cfg)
+        with _INSTALL_LOCK:
+            res = _install_binary_by_name(name, progress_cb=progress_cb,
+                                          tag=tag, transport=transport,
+                                          _cfg=_cfg)
     finally:
         _refresh_update_row(name)
     if _cfg is not None or not isinstance(res, dict) or not res.get("ok"):
@@ -2203,6 +2254,14 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
             had_backup = False
 
         if not install_binary(final_path, cfg["dest"]):
+            # dest не тронут (replace атомарен, staged прибран в самой
+            # install_binary): наш .prev — копия того, что и так лежит
+            # на месте, прибираем, чтобы не оставлять 0755-мусор в PATH.
+            if had_backup:
+                try:
+                    os.unlink(backup)
+                except OSError:
+                    pass
             return {"ok": False, "error": "Не удалось установить бинарник"}
         if unpacked_tmp:
             try:
@@ -2212,11 +2271,13 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
 
         check = verify_installed_binary(cfg["dest"], _probe_args(cfg))
         if not check.get("ok"):
-            restored = False
-            if had_backup:
+            restored = (_restore_prev(cfg["dest"], backup)
+                        if had_backup else False)
+            if restored:
+                # copyfile-фолбэк не потребляет бэкап, как os.replace:
+                # прибираем сами, чтобы не оставлять 0755-копию в PATH.
                 try:
-                    os.replace(backup, cfg["dest"])
-                    restored = True
+                    os.unlink(backup)
                 except OSError:
                     pass
             if not restored:
@@ -2226,7 +2287,9 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
                     pass
             log.warning("ext_installer: %s не прошёл проверку запуска (%s)%s"
                         % (cfg["dest"], check.get("error"),
-                           " — вернул прежнюю версию" if restored else ""),
+                           " — вернул прежнюю версию" if restored
+                           else (" — прежняя версия осталась в %s"
+                                 % backup) if had_backup else ""),
                         source="ext_installer")
             if check.get("not_a_binary"):
                 # Не «сборка не под эту архитектуру», а «скачан не тот
@@ -2239,8 +2302,12 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
                     "error": "Скачанный файл не запускается на этом"
                              " устройстве (%s).%s"
                              % (check.get("error"),
-                                " Прежняя версия возвращена на место."
-                                if restored else "")}
+                                (" Прежняя версия возвращена на место."
+                                 if restored else
+                                 (" Прежняя версия осталась в %s — "
+                                  "верните вручную: mv %s %s"
+                                  % (backup, backup, cfg["dest"]))
+                                 if had_backup else ""))}
 
         # Успех — бэкап отработал своё: как у манифестного пути, не
         # оставляем копию прежнего бинарника (0755) в каталоге PATH.
@@ -2294,30 +2361,32 @@ def uninstall_binary(name: str) -> dict:
     if legacy.get("install_kind") == "package" and legacy.get("package_name"):
         packages.append(legacy["package_name"])
     try:
-        for pkg in packages:
-            # Установлено через opkg/apk — удалять надо пакетом, иначе база
-            # пакетов продолжит считать его установленным и повторная
-            # установка завершится noop («уже актуально») без бинарника.
-            pkg_mgr = _package_manager()
-            if pkg_mgr and _pkg_version(pkg):
-                cmd = ([pkg_mgr, "remove", pkg] if pkg_mgr == "opkg"
-                       else [pkg_mgr, "del", pkg])
-                proc = subprocess.run(cmd, capture_output=True, text=True,
-                                      timeout=300)
-                if proc.returncode != 0:
-                    return {"ok": False,
-                            "error": "Удаление пакета не удалось: %s"
-                                     % ((proc.stderr or proc.stdout
-                                         or "").strip())}
-        if os.path.isfile(cfg["dest"]):
-            os.unlink(cfg["dest"])
-        # Бэкап прошлой установки (схема .prev): «Удалить движок»
-        # прибирает и его — иначе копия прежнего бинарника навсегда
-        # оставалась в каталоге PATH.
-        prev = cfg["dest"] + ".prev"
-        if os.path.isfile(prev):
-            os.unlink(prev)
-        return {"ok": True}
+        with _INSTALL_LOCK:
+            for pkg in packages:
+                # Установлено через opkg/apk — удалять надо пакетом, иначе
+                # база пакетов продолжит считать его установленным и
+                # повторная установка завершится noop («уже актуально»)
+                # без бинарника.
+                pkg_mgr = _package_manager()
+                if pkg_mgr and _pkg_version(pkg):
+                    cmd = ([pkg_mgr, "remove", pkg] if pkg_mgr == "opkg"
+                           else [pkg_mgr, "del", pkg])
+                    proc = subprocess.run(cmd, capture_output=True, text=True,
+                                          timeout=300)
+                    if proc.returncode != 0:
+                        return {"ok": False,
+                                "error": "Удаление пакета не удалось: %s"
+                                         % ((proc.stderr or proc.stdout
+                                             or "").strip())}
+            if os.path.isfile(cfg["dest"]):
+                os.unlink(cfg["dest"])
+            # Бэкап прошлой установки (схема .prev): «Удалить движок»
+            # прибирает и его — иначе копия прежнего бинарника навсегда
+            # оставалась в каталоге PATH.
+            prev = cfg["dest"] + ".prev"
+            if os.path.isfile(prev):
+                os.unlink(prev)
+            return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

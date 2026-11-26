@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -1372,3 +1373,372 @@ class TestDirectPathPrevBackup(unittest.TestCase):
             self.assertTrue(res["error"].startswith("Скачанный файл:"))
             with open(dest, "rb") as f:
                 self.assertEqual(f.read(), self.OLD)
+
+
+class TestDirectPathRollbackResilience(TestDirectPathPrevBackup):
+    """Провал отката не оставляет пользователя в темноте.
+
+    LOW-2 ревью .prev-этапа: если os.replace(backup, dest) сам упал,
+    прежняя версия оставалась единственной копией в ``.prev`` — без
+    слов об этом в ответе и без второй попытки. Теперь: копия поверх
+    не-исполняющегося файла как фолбэк, а при полном провале — честная
+    подсказка, где лежит прежняя версия и как её вернуть.
+    """
+
+    def _install_with_broken_replace(self, dest, verify):
+        """Прогон прямого пути, где ОТКАТ не может ни replace, ни copy."""
+        events = []
+
+        real_replace = os.replace
+        real_copyfile = shutil.copyfile
+
+        def replace(src, dst):
+            if str(src).endswith(".prev"):
+                events.append("replace-rollback-failed")
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst)
+
+        def copyfile(src, dst, **kw):
+            if str(src).endswith(".prev"):
+                events.append("copy-rollback-failed")
+                raise OSError(28, "No space left on device")
+            return real_copyfile(src, dst, **kw)
+
+        with tempfile.TemporaryDirectory(prefix="resil-") as td:
+            src = os.path.join(td, "newbin")
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+            cfg = dict(ebi.BINARIES["geneva"], dest=dest)
+            with mock.patch("core.ext_binary_installer.github_release",
+                            return_value=self._release()), \
+                 mock.patch("core.ext_binary_installer."
+                            "_verify_downloaded_file",
+                            return_value={"ok": True}), \
+                 mock.patch("core.ext_binary_installer.download_file",
+                            return_value=True), \
+                 mock.patch("core.ext_binary_installer._unpack_if_needed",
+                            return_value=(src, None, "")), \
+                 mock.patch("core.ext_binary_installer."
+                            "verify_installed_binary",
+                            return_value=verify), \
+                 mock.patch("core.ext_binary_installer._get_version",
+                            return_value="2.0.1"), \
+                 mock.patch("core.ext_binary_installer.detect_arch",
+                            return_value="aarch64"), \
+                 mock.patch("core.ext_binary_installer.os.replace",
+                            side_effect=replace), \
+                 mock.patch("core.ext_binary_installer.shutil.copyfile",
+                            side_effect=copyfile), \
+                 mock.patch("core.ext_binary_installer.tempfile."
+                            "NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = src
+                mtmp.return_value = tmp
+                res = ebi.install_binary_by_name("geneva", _cfg=cfg)
+        return res, events
+
+    def test_broken_rollback_keeps_prev_and_tells_where_it_is(self):
+        with tempfile.TemporaryDirectory(prefix="resil1-") as td:
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+
+            res, events = self._install_with_broken_replace(
+                dest, verify={"ok": False, "error": "exit 1"})
+
+            self.assertFalse(res["ok"])
+            self.assertFalse(res["restored"])
+            # Обе попытки отката реально предприняты
+            self.assertEqual(events, ["replace-rollback-failed",
+                                      "copy-rollback-failed"])
+            # Прежняя версия не потеряна и не замолчана
+            self.assertTrue(os.path.isfile(dest + ".prev"))
+            with open(dest + ".prev", "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
+            self.assertFalse(os.path.exists(dest))
+            self.assertIn(dest + ".prev", res["error"])
+            self.assertIn("mv %s %s" % (dest + ".prev", dest),
+                          res["error"])
+
+    def test_copy_fallback_restores_when_replace_fails(self):
+        # os.replace упал, но copyfile над не-исполняющимся файлом
+        # проходит: прежняя версия возвращается, бэкап почищен.
+        with tempfile.TemporaryDirectory(prefix="resil2-") as td:
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+
+            real_replace = os.replace
+
+            def replace(src, dst):
+                if str(src).endswith(".prev"):
+                    raise OSError(28, "No space left on device")
+                return real_replace(src, dst)
+
+            src = os.path.join(td, "newbin")
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+            cfg = dict(ebi.BINARIES["geneva"], dest=dest)
+            with mock.patch("core.ext_binary_installer.github_release",
+                            return_value=self._release()), \
+                 mock.patch("core.ext_binary_installer."
+                            "_verify_downloaded_file",
+                            return_value={"ok": True}), \
+                 mock.patch("core.ext_binary_installer.download_file",
+                            return_value=True), \
+                 mock.patch("core.ext_binary_installer._unpack_if_needed",
+                            return_value=(src, None, "")), \
+                 mock.patch("core.ext_binary_installer."
+                            "verify_installed_binary",
+                            return_value={"ok": False,
+                                          "error": "exit 1"}), \
+                 mock.patch("core.ext_binary_installer._get_version",
+                            return_value="2.0.1"), \
+                 mock.patch("core.ext_binary_installer.detect_arch",
+                            return_value="aarch64"), \
+                 mock.patch("core.ext_binary_installer.os.replace",
+                            side_effect=replace), \
+                 mock.patch("core.ext_binary_installer.tempfile."
+                            "NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = src
+                mtmp.return_value = tmp
+                res = ebi.install_binary_by_name("geneva", _cfg=cfg)
+
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["restored"])
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
+            self.assertFalse(os.path.exists(dest + ".prev"))
+
+
+class TestInstallLock(TestDirectPathPrevBackup):
+    """MEDIUM-2 ревью: параллельные установки одного движка.
+
+    Две установки наперегонки перепутывали бы пару dest/.prev: бэкап
+    одного вызова становился откатом другого, os.replace на общем dest
+    — гонкой последних записей. Теперь весь прямой путь (и удаление)
+    сериализуется `_INSTALL_LOCK`; второй вызов, дождавшись, видит
+    совпадающую версию и завершается noop-ом.
+    """
+
+    def _redownload(self, src):
+        """Как живая загрузка: файл (пере)создаётся на каждый вызов.
+
+        Хвост установки сносит tmp_path — в песочнице он же источник,
+        поэтому «скачивание» обязано писать файл заново, иначе второй
+        вызов в тесте получает ENOENT вместо своей копии.
+        """
+        def dl(*args, **kwargs):
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+            return True
+        return dl
+
+    def test_parallel_installs_serialize(self):
+        windows = []          # (поток, вход, выход) одного выполнения
+
+        def slow_unpack(path, member):
+            # «Распаковка» — самая длинная стадия: по её окну видно,
+            # перекрываются ли выполнения. Распаковывать нечего —
+            # источник уже готов (tmp.name указывает на него).
+            me = threading.current_thread()
+            enter = time.time()
+            time.sleep(0.2)
+            windows.append((me, enter, time.time()))
+            return path, None, ""
+
+        with tempfile.TemporaryDirectory(prefix="locks-") as td:
+            # Два ВЫЗОВА — один и тот же dest: до замка они крутили
+            # lifecycle .prev друг друга.
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            src = os.path.join(td, "newbin")
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+
+            cfg = dict(ebi.BINARIES["geneva"], dest=dest)
+            with mock.patch("core.ext_binary_installer.github_release",
+                            return_value=self._release()), \
+                 mock.patch("core.ext_binary_installer."
+                            "_verify_downloaded_file",
+                            return_value={"ok": True}), \
+                 mock.patch("core.ext_binary_installer.download_file",
+                            side_effect=self._redownload(src)), \
+                 mock.patch("core.ext_binary_installer._unpack_if_needed",
+                            side_effect=slow_unpack), \
+                 mock.patch("core.ext_binary_installer."
+                            "verify_installed_binary",
+                            return_value={"ok": True}), \
+                 mock.patch("core.ext_binary_installer._get_version",
+                            return_value="2.0.1"), \
+                 mock.patch("core.ext_binary_installer.detect_arch",
+                            return_value="aarch64"), \
+                 mock.patch("core.ext_binary_installer.tempfile."
+                            "NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = src
+                mtmp.return_value = tmp
+
+                results = []
+
+                def run():
+                    results.append(ebi.install_binary_by_name(
+                        "geneva", _cfg=cfg))
+
+                threads = []
+                for _ in range(2):
+                    t = threading.Thread(target=run)
+                    t.start()
+                    threads.append(t)
+                for t in threads:
+                    t.join(30)
+                    self.assertFalse(t.is_alive())
+
+            # Оба вызова ДОСТАВИЛИ: без замка один из двух бился об
+            # общий staged dest+".new" и возвращал «Не удалось
+            # установить бинарник» — проверка результата, а не только
+            # окон, ловит и это, и будущие регрессии замка.
+            self.assertEqual(len(results), 2)
+            for r in results:
+                self.assertTrue(r.get("ok"), r)
+
+            # Окна выполнений НЕ перекрываются: выход первого раньше
+            # входа второго (пары полные, порядок любой).
+            self.assertEqual(len(windows), 2)
+            a, b = windows
+            self.assertNotEqual(a[0], b[0])
+            first, second = (a, b) if a[1] <= b[1] else (b, a)
+            self.assertLessEqual(first[2], second[1] + 0.05)
+            # Итог консистентен: dest — новая версия, мусора нет.
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.NEW)
+            self.assertFalse(os.path.exists(dest + ".prev"))
+            leftovers = [p for p in os.listdir(td)
+                         if ".new-" in p or p.endswith(".prev")]
+            self.assertEqual(leftovers, [])
+
+
+class TestManifestPathRollback(TestDirectPathPrevBackup):
+    """MEDIUM-3 ревью: лестница отката — и на манифестном пути.
+
+    `_install_binary_file` — первичный путь usque/tgproto/opera (и
+    локальные загрузки). До общей `_restore_prev` его откат был
+    «replace или ничего»: неудача rename молча оставляла прежнюю
+    версию единственной копией в .prev без фолбэка и подсказки.
+    """
+
+    def test_broken_rollback_keeps_prev_and_tells_where_it_is(self):
+        import shutil
+
+        real_replace = os.replace
+        real_copyfile = shutil.copyfile
+
+        def replace(src, dst):
+            if str(src).endswith(".prev"):
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst)
+
+        def copyfile(src, dst, **kw):
+            if str(src).endswith(".prev"):
+                raise OSError(28, "No space left on device")
+            return real_copyfile(src, dst, **kw)
+
+        with tempfile.TemporaryDirectory(prefix="manifest-rl-") as td:
+            dest = os.path.join(td, "usque")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            src = os.path.join(td, "downloaded")
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+
+            cfg = {"dest": dest, "version_args": ["version"]}
+            with mock.patch("core.ext_binary_installer."
+                            "verify_installed_binary",
+                            return_value={"ok": False,
+                                          "error": "exit 1"}), \
+                 mock.patch("core.ext_binary_installer.os.replace",
+                            side_effect=replace), \
+                 mock.patch("core.ext_binary_installer.shutil.copyfile",
+                            side_effect=copyfile):
+                res = ebi._install_binary_file(cfg, src)
+
+            self.assertFalse(res["ok"])
+            self.assertFalse(res["restored"])
+            # Прежняя версия уцелела в бэкапе, и ответ говорит, где
+            # она и какой командой вернуть.
+            self.assertTrue(os.path.exists(dest + ".prev"))
+            with open(dest + ".prev", "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
+            self.assertFalse(os.path.exists(dest))
+            self.assertIn("mv %s %s" % (dest + ".prev", dest),
+                          res["error"])
+
+    def test_copy_fallback_restores_when_replace_fails(self):
+        import shutil
+
+        real_replace = os.replace
+        real_copyfile = shutil.copyfile
+
+        def replace(src, dst):
+            if str(src).endswith(".prev"):
+                raise OSError(1, "Operation not permitted")
+            return real_replace(src, dst)
+
+        with tempfile.TemporaryDirectory(prefix="manifest-cf-") as td:
+            dest = os.path.join(td, "usque")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            src = os.path.join(td, "downloaded")
+            with open(src, "wb") as f:
+                f.write(self.NEW)
+
+            cfg = {"dest": dest, "version_args": ["version"]}
+            with mock.patch("core.ext_binary_installer."
+                            "verify_installed_binary",
+                            return_value={"ok": False,
+                                          "error": "exit 1"}), \
+                 mock.patch("core.ext_binary_installer.os.replace",
+                            side_effect=replace):
+                res = ebi._install_binary_file(cfg, src)
+
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["restored"])
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
+            self.assertFalse(os.path.exists(dest + ".prev"))
+
+
+class TestPrevCleanupOnInstallFailure(TestDirectPathPrevBackup):
+    """Провал install_binary не оставляет бесполезный .prev.
+
+    dest не тронут (replace атомарен, staged прибран в самой
+    install_binary): копия прежней версии рядом — 0755-мусор в PATH.
+    """
+
+    def test_prev_is_cleaned_and_dest_intact(self):
+        # Провал install_binary: dest не тронут (replace атомарен,
+        # staged прибран в самой install_binary), наш .prev — копия
+        # того же, что лежит на месте, мусор прибираем.
+        with tempfile.TemporaryDirectory(prefix="prev-clean-") as td:
+            dest = os.path.join(td, "geneva")
+            with open(dest, "wb") as f:
+                f.write(self.OLD)
+            with mock.patch("core.ext_binary_installer.install_binary",
+                            return_value=False):
+                res = self._install(
+                    dest, verify={"ok": True, "version": "2.0.4"})
+
+            self.assertFalse(res["ok"])
+            self.assertEqual(res["error"], "Не удалось установить бинарник")
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), self.OLD)
+            self.assertEqual(
+                [p for p in os.listdir(td) if p.endswith(".prev")], [])
