@@ -521,11 +521,16 @@ class TestRender(unittest.TestCase):
         self.assertEqual(validate(cfg), [])
 
     def test_awg_without_obfuscation_is_plain_wireguard(self):
+        # «Jc»/«H1» ищем в полях распарсенного конфига, а не в тексте:
+        # PrivateKey — случайный base64 и с шансом ~1% за прогон содержит
+        # «Jc» (и «H1») просто как пару букв (поймано прогоном CI).
+        from core.awg_config import parse_conf
         opts = gen.normalize_options("warp", "wireguard",
                                      {"mask": "none", "junk": "off"})
-        text = render.awg_conf(_wg_profile(), opts)
-        self.assertNotIn("Jc", text)
-        self.assertNotIn("H1", text)
+        cfg = parse_conf(render.awg_conf(_wg_profile(), opts))
+        iface = cfg["interface"]
+        self.assertNotIn("Jc", iface)
+        self.assertNotIn("H1", iface)
 
     def test_singbox_uses_endpoints(self):
         from core.singbox_config import parse_conf, validate

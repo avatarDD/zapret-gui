@@ -149,16 +149,22 @@ class TestOurOwnScanIsNotAConflict(unittest.TestCase):
         import subprocess
         import tempfile
         import shutil
+        import sys
         import time
         from core.diagnostics import check_nfqws_conflicts
 
         tmp = tempfile.mkdtemp()
         try:
             fake = os.path.join(tmp, "nfqws2")
-            shutil.copy(shutil.which("sleep"), fake)
+            # Жертва — копия Питона под видом nfqws2: comm процесса будет
+            # «nfqws2», и копия живёт под чужим именем на любой машине.
+            # (Копия /bin/sleep на dev-боксах с multicall coreutils
+            # мгновенно умирает: «coreutils: unknown program».)
+            shutil.copy(sys.executable, fake)
             # Внук в своей сессии — ровно так запускается blockcheck2.
-            proc = subprocess.Popen(["sh", "-c", "%s 10" % fake],
-                                    preexec_fn=os.setsid)
+            proc = subprocess.Popen(
+                ["sh", "-c", "%s -c 'import time; time.sleep(10)'" % fake],
+                preexec_fn=os.setsid)
             try:
                 time.sleep(0.3)
                 result = check_nfqws_conflicts()

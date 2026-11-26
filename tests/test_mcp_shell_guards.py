@@ -287,14 +287,23 @@ class TestGuard(unittest.TestCase):
         # живёт в проверке аргумента, а не в самом таймере).
         armed = shell_exec.arm_guard(
             {"revert_cmd": self.revert(), "ttl_sec": 1}, "тестовая команда")
-        for _ in range(40):
-            if os.path.exists(self.flag):
+        # Бюджет 15 с, а не 4: под полной загрузкой CPU (весь набор
+        # pytest одновременно) секундомер-поток бывало голодал дольше
+        # секунды. Ждём именно state="fired", а не файл-флаг: флаг
+        # создаёт сама revert_cmd внутри _run_sync, а "fired" ставится
+        # уже ПОСЛЕ её возврата (shell_exec.py:1742-1743) — если ждать
+        # флаг, assert ловит промежуточное "firing".
+        state = ""
+        for _ in range(60):
+            entry = shell_exec.get_guard(armed["run_id"])
+            state = entry.get("state") if entry else ""
+            if state == "fired":
                 break
-            time.sleep(0.1)
+            time.sleep(0.25)
+        self.assertEqual(state, "fired",
+                         "дедмен не дошёл до «fired» за 15 с")
         self.assertTrue(os.path.exists(self.flag),
                         "revert_cmd не выполнился по TTL")
-        self.assertEqual(shell_exec.get_guard(armed["run_id"])["state"],
-                         "fired")
 
     def test_guard_file_lives_next_to_settings(self):
         # /tmp на роутере — tmpfs: дедмен, положенный туда, исчезает

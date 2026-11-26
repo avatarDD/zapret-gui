@@ -212,6 +212,13 @@ class TestTgproxyAutostart(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Идиома test_backup.py: init_config на временный каталог — без
+        # него PUT /autostart честно пытается сохранить настройки в
+        # ДЕФОЛТНЫЙ /opt/etc/zapret-gui (без root на dev-боксе — отказ,
+        # а на root-машине — порча боевого settings.json).
+        import tempfile
+        from core.config_manager import init_config
+        init_config(tempfile.mkdtemp(prefix="tg-auto-"))
         cls.client = WSGIClient(build_test_app())
 
     def test_autostart_toggle_round_trip(self):

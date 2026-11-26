@@ -334,8 +334,11 @@ class TestInstallBinaryByName(unittest.TestCase):
     @mock.patch("core.ext_binary_installer._pkg_version")
     @mock.patch("core.ext_binary_installer.detect_arch")
     def test_skips_download_if_versions_match(self, mock_arch, mock_pkg_version, mock_release):
-        # usque ставится как Entware-пакет (install_kind=package): проверка
-        # «уже актуально» идёт через opkg (_pkg_version), а не _get_version.
+        # Запасной источник usque — Entware-пакет (install_kind=package):
+        # проверка «уже актуально» идёт через opkg (_pkg_version), а не
+        # _get_version. Основной источник usque — наша сборка по
+        # манифесту, поэтому тест зовёт установщик прямо с legacy-конфигом
+        # (_cfg), не трогая сеть GitHub.
         mock_arch.return_value = "aarch64"
         mock_pkg_version.return_value = "0.3.0"
         mock_release.return_value = {
@@ -343,7 +346,8 @@ class TestInstallBinaryByName(unittest.TestCase):
             "assets": []
         }
 
-        res = ebi.install_binary_by_name("usque")
+        res = ebi.install_binary_by_name(
+            "usque", _cfg=ebi.BINARIES["usque"]["legacy_source"])
         self.assertTrue(res["ok"])
         self.assertEqual(res.get("noop"), True)
         self.assertEqual(res["version"], "v0.3.0")
@@ -482,8 +486,13 @@ class TestInstallBinaryByName(unittest.TestCase):
 
     @mock.patch("core.ext_binary_installer.github_release",
                 return_value={"error_detail": "GitHub API HTTP error 403"})
+    @mock.patch("core.ext_binary_installer.github_release_by_prefix",
+                return_value={"error_detail": "GitHub API HTTP error 403"})
     @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
-    def test_release_api_error_fails(self, mock_arch, mock_release):
+    def test_release_api_error_fails(self, mock_arch, mock_prefix, mock_release):
+        # Основной источник usque — наша сборка (github_release_by_prefix);
+        # когда и он, и запасной пакетный релиз недоступны, установщик
+        # обязан вернуть ошибку GitHub, не падая и не качая ничего.
         res = ebi.install_binary_by_name("usque")
         self.assertFalse(res["ok"])
         self.assertIn("GitHub API", res["error"])

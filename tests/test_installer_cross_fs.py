@@ -16,6 +16,7 @@ dest вполне могут оказаться на разных ФС; обно
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -54,27 +55,35 @@ class TestCrossFsInstall(unittest.TestCase):
     def test_replaces_running_binary_across_filesystems(self):
         if not self.src_dir:
             self.skipTest("нет второй ФС для проверки cross-device пути")
-        if not (os.path.exists("/bin/sleep") and os.path.exists("/bin/true")):
-            self.skipTest("нет системных бинарников для подмены")
 
         dest = os.path.join(self.dest_dir, "engine")
-        shutil.copy2("/bin/sleep", dest)
+        # Жертва — копия Питона: настоящий ELF, которому всё равно, как
+        # его переименовали. Копия /bin/sleep на dev-боксах с multicall
+        # coreutils («unknown program») мгновенно умирает под чужим
+        # именем, и тест падал на ровном месте.
+        shutil.copy2(sys.executable, dest)
         os.chmod(dest, 0o755)
 
         # Держим бинарник запущенным — именно это и давало ETXTBSY.
-        self.proc = subprocess.Popen([dest, "30"])
+        self.proc = subprocess.Popen(
+            [dest, "-c", "import time; time.sleep(30)"])
         time.sleep(0.3)
         self.assertIsNone(self.proc.poll(), "процесс-жертва не запустился")
 
         src = os.path.join(self.src_dir, "engine-new")
-        shutil.copy2("/bin/true", src)
+        # Содержимое нового бинарника install_binary не разбирает —
+        # только копирует, поэтому генерируем заглушку сами и не
+        # зависим от /bin/true, которого в системе может не быть.
+        with open(src, "wb") as f:
+            f.write(b"stub-not-executed-" + os.urandom(32))
+        new_size = os.path.getsize(src)
         if os.stat(src).st_dev == os.stat(dest).st_dev:
             self.skipTest("src и dest оказались на одной ФС")
 
         res = install_binary(src, dest, backup_old=True)
 
         self.assertTrue(res.get("ok"), res)
-        self.assertEqual(os.path.getsize(dest), os.path.getsize("/bin/true"),
+        self.assertEqual(os.path.getsize(dest), new_size,
                          "бинарник не заменён")
         self.assertTrue(os.access(dest, os.X_OK), "потерян бит +x")
         self.assertTrue(os.path.isfile(dest + ".bak"), "нет бэкапа старого")
