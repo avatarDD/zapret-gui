@@ -19,7 +19,7 @@
 --
 -- Upstream already ships `ip_autottl=delta:min-max` which does per-
 -- connection hop discovery from the first incoming server reply (see
--- zapret-lib.lua:876 ttl_discover). Two weaknesses:
+-- ttl_discover in zapret-lib.lua). Two weaknesses:
 --   1. Needs incoming_ttl cached → doesn't fire on the very first packet
 --      of a flow (exactly when DPI is most alert).
 --   2. Ties fake TTL to hop count to the server, not to the real egress

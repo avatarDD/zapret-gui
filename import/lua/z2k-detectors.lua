@@ -186,7 +186,7 @@ end
 --   3. path-only       "/some/path"                → returns nil
 --                       (no host change, same-origin redirect)
 -- Strip `:port` suffix from a hostname (mirrors dissect_url's domain
--- extraction at zapret-lib.lua:1816-1821). Apply before SLD comparison
+-- extraction in zapret-lib.lua). Apply before SLD comparison
 -- so example.com:443 == example.com.
 local function z2k_strip_port(host)
   if type(host) ~= "string" then return host end
